@@ -694,16 +694,89 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     entry: MemoryFileEntry | SessionFileEntry,
     options: { source: MemorySource; content?: string },
   ) {
-    // FTS-only mode: skip indexing if no provider
+    const content = options.content ?? (await fs.readFile(entry.absPath, "utf-8"));
+    const modelLabel = this.provider?.model ?? "fts-only";
+
+    // FTS-only mode: chunk and index without embeddings
     if (!this.provider) {
-      log.debug("Skipping embedding indexing in FTS-only mode", {
-        path: entry.path,
-        source: options.source,
-      });
+      const chunks = chunkMarkdown(content, this.settings.chunking).filter(
+        (chunk) => chunk.text.trim().length > 0,
+      );
+      if (options.source === "sessions" && "lineMap" in entry) {
+        remapChunkLines(chunks, entry.lineMap);
+      }
+      const now = Date.now();
+
+      if (this.fts.enabled && this.fts.available) {
+        try {
+          this.db
+            .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
+            .run(entry.path, options.source, modelLabel);
+        } catch {}
+      }
+      this.db
+        .prepare(`DELETE FROM chunks WHERE path = ? AND source = ?`)
+        .run(entry.path, options.source);
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const id = hashText(
+          `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${modelLabel}`,
+        );
+        this.db
+          .prepare(
+            `INSERT INTO chunks (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               hash=excluded.hash,
+               model=excluded.model,
+               text=excluded.text,
+               embedding=excluded.embedding,
+               updated_at=excluded.updated_at`,
+          )
+          .run(
+            id,
+            entry.path,
+            options.source,
+            chunk.startLine,
+            chunk.endLine,
+            chunk.hash,
+            modelLabel,
+            chunk.text,
+            JSON.stringify([]),
+            now,
+          );
+        if (this.fts.enabled && this.fts.available) {
+          this.db
+            .prepare(
+              `INSERT INTO ${FTS_TABLE} (text, id, path, source, model, start_line, end_line)\n` +
+                ` VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              chunk.text,
+              id,
+              entry.path,
+              options.source,
+              modelLabel,
+              chunk.startLine,
+              chunk.endLine,
+            );
+        }
+      }
+      this.db
+        .prepare(
+          `INSERT INTO files (path, source, hash, mtime, size) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(path) DO UPDATE SET
+             source=excluded.source,
+             hash=excluded.hash,
+             mtime=excluded.mtime,
+             size=excluded.size`,
+        )
+        .run(entry.path, options.source, entry.hash, entry.mtimeMs, entry.size);
       return;
     }
 
-    const content = options.content ?? (await fs.readFile(entry.absPath, "utf-8"));
+    // Full mode: chunk, embed, and index
     const chunks = enforceEmbeddingMaxInputTokens(
       this.provider,
       chunkMarkdown(content, this.settings.chunking).filter(
@@ -733,7 +806,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       try {
         this.db
           .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
-          .run(entry.path, options.source, this.provider.model);
+          .run(entry.path, options.source, modelLabel);
       } catch {}
     }
     this.db
@@ -743,7 +816,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       const chunk = chunks[i];
       const embedding = embeddings[i] ?? [];
       const id = hashText(
-        `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider.model}`,
+        `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${modelLabel}`,
       );
       this.db
         .prepare(
@@ -763,7 +836,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
           chunk.startLine,
           chunk.endLine,
           chunk.hash,
-          this.provider.model,
+          modelLabel,
           chunk.text,
           JSON.stringify(embedding),
           now,
@@ -787,7 +860,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
             id,
             entry.path,
             options.source,
-            this.provider.model,
+            modelLabel,
             chunk.startLine,
             chunk.endLine,
           );
