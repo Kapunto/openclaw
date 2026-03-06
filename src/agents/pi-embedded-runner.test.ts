@@ -5,6 +5,8 @@ import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 
+const capturedStreamInputs: Array<{ context: unknown }> = [];
+
 function createMockUsage(input: number, output: number) {
   return {
     input,
@@ -68,7 +70,8 @@ vi.mock("@mariozechner/pi-ai", async () => {
       }
       return buildAssistantMessage(model);
     },
-    streamSimple: (model: { api: string; provider: string; id: string }) => {
+    streamSimple: (model: { api: string; provider: string; id: string }, context: unknown) => {
+      capturedStreamInputs.push({ context: JSON.parse(JSON.stringify(context ?? null)) });
       const stream = actual.createAssistantMessageEventStream();
       queueMicrotask(() => {
         stream.push({
@@ -142,6 +145,16 @@ const nextSessionFile = () => {
 const nextRunId = (prefix = "run-embedded-test") => `${prefix}-${++runCounter}`;
 const nextSessionKey = () => `agent:test:embedded:${nextRunId("session-key")}`;
 const immediateEnqueue = async <T>(task: () => Promise<T>) => task();
+
+const normalizeFinalModelInput = (value: unknown) =>
+  JSON.parse(
+    JSON.stringify(value, (key, current) => {
+      if (key === "timestamp") {
+        return undefined;
+      }
+      return current;
+    }),
+  );
 
 const runWithOrphanedSingleUserMessage = async (text: string, sessionKey: string) => {
   const sessionFile = nextSessionFile();
@@ -294,5 +307,37 @@ describe("runEmbeddedPiAgent", () => {
 
     expect(result.meta.error).toBeUndefined();
     expect(result.payloads?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("keeps final model input identical when diagnostics telemetry is toggled", async () => {
+    const baseConfig = makeOpenAiConfig(["mock-1"]);
+    const sessionKey = nextSessionKey();
+
+    const runAndCaptureInput = async (diagnosticsEnabled: boolean) => {
+      capturedStreamInputs.length = 0;
+      await runEmbeddedPiAgent({
+        sessionId: "session:test",
+        sessionKey,
+        sessionFile: nextSessionFile(),
+        workspaceDir,
+        config: {
+          ...baseConfig,
+          diagnostics: diagnosticsEnabled ? { enabled: true } : undefined,
+        },
+        prompt: "hello telemetry parity",
+        provider: "openai",
+        model: "mock-1",
+        timeoutMs: 5_000,
+        agentDir,
+        runId: nextRunId(diagnosticsEnabled ? "diag-on" : "diag-off"),
+        enqueue: immediateEnqueue,
+      });
+      return normalizeFinalModelInput(capturedStreamInputs.at(-1)?.context);
+    };
+
+    const withoutTelemetry = await runAndCaptureInput(false);
+    const withTelemetry = await runAndCaptureInput(true);
+
+    expect(withTelemetry).toEqual(withoutTelemetry);
   });
 });

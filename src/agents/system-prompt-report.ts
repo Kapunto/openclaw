@@ -143,6 +143,8 @@ export function buildSystemPromptReport(params: {
   const projectContextChars = projectContext.text.length;
   const toolListText = extractToolListText(systemPrompt);
   const toolListChars = toolListText.length;
+  const runtimeBlock = extractBetween(systemPrompt, "\n## Runtime\n", "\nReasoning:");
+  const runtimeChars = runtimeBlock.text.length;
   const toolsEntries = buildToolsEntries(params.tools);
   const toolsSchemaChars = toolsEntries.reduce((sum, t) => sum + (t.schemaChars ?? 0), 0);
   const skillsEntries = parseSkillBlocks(params.skillsPrompt);
@@ -162,6 +164,7 @@ export function buildSystemPromptReport(params: {
       chars: systemPrompt.length,
       projectContextChars,
       nonProjectContextChars: Math.max(0, systemPrompt.length - projectContextChars),
+      runtimeChars,
     },
     injectedWorkspaceFiles: buildInjectedWorkspaceFiles({
       bootstrapFiles: params.bootstrapFiles,

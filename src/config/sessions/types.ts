@@ -301,6 +301,7 @@ export type SessionSystemPromptReport = {
     chars: number;
     projectContextChars: number;
     nonProjectContextChars: number;
+    runtimeChars?: number;
   };
   injectedWorkspaceFiles: Array<{
     name: string;

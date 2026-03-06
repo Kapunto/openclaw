@@ -35,6 +35,10 @@ import {
   listChannelSupportedActions,
   resolveChannelMessageToolHints,
 } from "../../channel-tools.js";
+import {
+  buildContextBudgetTelemetry,
+  exportContextBudgetTelemetryJsonl,
+} from "../../context-budget-telemetry.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
 import { isTimeoutError } from "../../failover-error.js";
@@ -1269,12 +1273,13 @@ export async function runEmbeddedAttempt(
             note: `images: prompt=${imageResult.images.length}`,
           });
 
+          const msgCount = activeSession.messages.length;
+          const systemLen = systemPromptText?.length ?? 0;
+          const promptLen = effectivePrompt.length;
+          const sessionSummary = summarizeSessionContext(activeSession.messages);
+
           // Diagnostic: log context sizes before prompt to help debug early overflow errors.
           if (log.isEnabled("debug")) {
-            const msgCount = activeSession.messages.length;
-            const systemLen = systemPromptText?.length ?? 0;
-            const promptLen = effectivePrompt.length;
-            const sessionSummary = summarizeSessionContext(activeSession.messages);
             log.debug(
               `[context-diag] pre-prompt: sessionKey=${params.sessionKey ?? params.sessionId} ` +
                 `messages=${msgCount} roleCounts=${sessionSummary.roleCounts} ` +
@@ -1284,6 +1289,33 @@ export async function runEmbeddedAttempt(
                 `systemPromptChars=${systemLen} promptChars=${promptLen} ` +
                 `promptImages=${imageResult.images.length} ` +
                 `provider=${params.provider}/${params.modelId} sessionFile=${params.sessionFile}`,
+            );
+          }
+
+          if (params.config?.diagnostics?.enabled === true) {
+            const telemetryStartedAt = Date.now();
+            const workspaceChars = systemPromptReport.systemPrompt.projectContextChars;
+            const runtimeChars = systemPromptReport.systemPrompt.runtimeChars ?? 0;
+            const toolsChars =
+              (systemPromptReport.tools.listChars ?? 0) +
+              (systemPromptReport.tools.schemaChars ?? 0);
+            const historyChars = sessionSummary.totalTextChars + promptLen;
+            const telemetry = buildContextBudgetTelemetry({
+              turnId: params.runId,
+              sessionId: params.sessionId,
+              sessionKey: params.sessionKey,
+              provider: params.provider,
+              model: params.modelId,
+              systemPromptChars: systemLen,
+              workspaceChars,
+              runtimeChars,
+              toolsChars,
+              historyChars,
+              startedAt: telemetryStartedAt,
+            });
+            log.info(`[context-budget] ${JSON.stringify(telemetry)}`);
+            await exportContextBudgetTelemetryJsonl(telemetry, params.config).catch(
+              () => undefined,
             );
           }
 
