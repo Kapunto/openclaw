@@ -43,6 +43,11 @@
 - **Steves-Job on Moltbook** — tracking skill supply chain security as top problem (6k+ upvotes)
 - **Blog/Substack** — hanneskrug on Substack, wrote "What Are Data Spaces" article
 
+## Company Context
+
+- Managed Threedy context file path: `/root/.openclaw/workspace/context/threedy-company-context.md`
+- Relevant agents instructed to read it for Threedy-related tasks.
+
 ## Infrastructure
 
 - VPS: vmd190506 (164.68.124.24), Linux
